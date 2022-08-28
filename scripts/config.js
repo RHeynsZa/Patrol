@@ -252,6 +252,5 @@ Hooks.on("updateToken", async (tokend,updates) => {
     }
     _pathPatrol.mapTokensAndPaths();
     _patrol.mapTokens();
-    _pathPatrol.mapTokensAndPaths();
   }
 });
