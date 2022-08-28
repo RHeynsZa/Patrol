@@ -18,7 +18,7 @@ Hooks.on("getSceneControlButtons", (controls, b, c) => {
       title: game.i18n.localize("patrol.tools.patrolToggle.hint"),
       onClick: (toggle) => {
         _patrol.started = toggle;
-        _pathPatrol.started = toggle;
+        _patrol.mapTokens();
       },
       toggle: true,
     },

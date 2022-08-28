@@ -2,6 +2,7 @@ class Patrol {
   constructor() {
     this.tokens = [];
     this.characters = [];
+    this.occupiedPositions = [];
     this.executePatrol = false;
     this.started = false;
     this.delay = game.settings.get(MODULE_NAME_PATROL, "patrolDelay") || 2500;
@@ -25,18 +26,18 @@ class Patrol {
         !t.actor?.effects?.find(e => e.getFlag("core", "statusId") === CONFIG.Combat.defeatedStatusId)
       )
       .forEach((t) => {
-        // Random tokens could be contained in a drawing
+        // Random Patrol tokens could be contained in a drawing
         // So we assign the drawing to the token if it is a drawing
+        // Drawings have the text "Patrol"
         let tokenDrawing = canvas.drawings.placeables
           .filter((d) => d.document.text == "Patrol")
           .map((d) => new PIXI.Polygon(this.adjustPolygonPoints(d)))
-          .find(poly => {
-            return poly.contains(t.center.x, t.center.y);
-          });
+          .find(poly => poly.contains(t.center.x, t.center.y));
+
         // Then we add the token to the list of tokens
         this.tokens.push({
           tokenDocument: t,
-          visitedPositions: [`${t.x}-${t.y}`],
+          visitedPositions: [{x: t.x, y: t.y}],
           patrolPolygon: tokenDrawing,
           canSpot: t.document.getFlag(MODULE_NAME_PATROL, "enableSpotting"),
           alerted:false,
@@ -49,6 +50,13 @@ class Patrol {
     this.characters = canvas.tokens.placeables.filter(
       (t) => t.actor && (t.actor?.type == "character" || t.actor?.type == "char" || t.actor?.hasPlayerOwner)
     );
+
+    // We store the occupied positions
+    this.occupiedPositions = this.characters.map((t) => {
+      return {x: t.x, y: t.y};
+    }).concat(this.tokens.map((t) => {
+      return {x: t.tokenDocument.x, y: t.tokenDocument.y};
+    }));
   }
 
   async patrolSetDelay(ms) {
@@ -66,7 +74,7 @@ class Patrol {
 
   patrolStart() {
     this.patrolSetDelay(this.delay);
-    canvas.app.ticker.add(this.patrolCompute);
+    canvas.app.ticker.add(this.patrolCompute.bind(this));
   }
 
   patrolStop() {
@@ -75,63 +83,41 @@ class Patrol {
 
   patrolCompute() {
     if (
-      _patrol.executePatrol &&
+      this.executePatrol &&
       !game.paused &&
       !game.combat?.started &&
-      _patrol.started
+      this.started
     ) {
       // Some performance metrics
       let perfStart, perfEnd;
-      if (_patrol.DEBUG) perfStart = performance.now();
-
-      // We map the tokens and the drawings/paths etc
-      _patrol.mapTokens();
+      if (this.DEBUG) perfStart = performance.now();
 
       // Init variables
-      _patrol.executePatrol = false;
-      _patrol.patrolSetDelay(_patrol.delay);
+      this.executePatrol = false;
+      this.patrolSetDelay(this.delay);
 
       let updates = [];
-      let occupiedPositions = [];
-
-      // I have no clue what this does
-      // TODO: find out what this does
-      _patrol.tokens.filter(token => token.canSpot && _patrol.detectPlayer(token,true) && (!token.alerted || canvas.grid.measureDistance(token.tokenDocument.center, token.spottedToken.center)<10)).forEach((token)=>{
-        occupiedPositions.push(`${token.tokenDocument.x}-${token.tokenDocument.y}`)
-      })
 
       // Here we go through all the tokens and move them
-      for (let token of _patrol.tokens) {
+      for (let token of this.tokens) {
         if (token.spottedToken) {
-          occupiedPositions.push(`${token.spottedToken.x}-${token.spottedToken.y}`);
+          this.occupiedPositions.push({x: token.spottedToken.x, y:token.spottedToken.y});
         }
 
         // Check if the token can spot and detect a player
         // If the token is not alerted, we check if the distance between the token and the player is less than 10
-        if (token.canSpot && _patrol.detectPlayer(token) && (!token.alerted || canvas.grid.measureDistance(token.tokenDocument.center, token.spottedToken.center)<10)) {
+        if (token.canSpot && this.detectPlayer(token) && (!token.alerted || canvas.grid.measureDistance(token.tokenDocument.center, token.spottedToken.center)<10)) {
             // We just skip, since the detection handles the rest of the token patrol
             continue;
         }
         // If selected, just skip
         if (token.tokenDocument.controlled) continue;
-        // Find valid positions to move to
-        let validPositions = _patrol.getValidPositions(token, occupiedPositions);
-        if (validPositions.length === 0) {
-          // If no valid positions, we stay where we are
-          let snapped = canvas.grid.getSnappedPosition(token.tokenDocument.x, token.tokenDocument.y);
-          token.visitedPositions.push(`${snapped.x}-${snapped.y}`);
-          occupiedPositions.push(`${token.tokenDocument.x}-${token.tokenDocument.y}`);
-        } else {
-          // If valid positions, we move to one of them
-          // Choose a random position from the valid positions
-          let newPosition = validPositions[Math.floor(Math.random() * validPositions.length)];
+        const newPosition = this.randomPathHandler(token);
+        if (newPosition) {
           updates.push({
             _id: token.tokenDocument.id,
-            x: newPosition.x,
-            y: newPosition.y,
+            ...newPosition,
           });
-          token.visitedPositions.push(`${newPosition.x}-${newPosition.y}`);
-          occupiedPositions.push(`${newPosition.x}-${newPosition.y}`);
         }
       }
 
@@ -139,7 +125,7 @@ class Patrol {
       canvas.scene.updateEmbeddedDocuments("Token", updates);
 
       // Some performance metrics
-      if (_patrol.DEBUG) {
+      if (this.DEBUG) {
         perfEnd = performance.now();
         console.log(
           `Patrol compute took ${perfEnd - perfStart} ms, FPS:${Math.round(
@@ -150,14 +136,15 @@ class Patrol {
     }
   }
 
-  getValidPositions(token,occupiedPositions) {
+  getValidPositions(token) {
     let validPositions = [];
+    // Find valid positions to move to
     this.getDirections(token.tokenDocument).forEach((d) => {
       if (
         // has the token visited this position already?
-        !token.visitedPositions.includes(`${d.x}-${d.y}`) &&
+        !token.visitedPositions.some((p) => p.x === d.x && p.y === d.y) &&
         // is the position not occupied?
-        !occupiedPositions.includes(`${d.x}-${d.y}`) &&
+        !this.occupiedPositions.some((p) => p.x === d.x && p.y === d.y) &&
         // is the position in the patrol polygon?
         (!token.patrolPolygon ||
           token.patrolPolygon.contains(d.center.x, d.center.y)) &&
@@ -166,6 +153,7 @@ class Patrol {
       )
         validPositions.push(d);
     });
+    // If the token is alerted, we can move closer to the player
     if(token.alerted && validPositions.length != 0){
       const reducer = (previousPoint, currentPoint) => {
           return canvas.grid.measureDistance(currentPoint.center, token.spottedToken.center) <
@@ -202,26 +190,30 @@ class Patrol {
         center: { x: token.center.x, y: token.center.y - g },
       },
     ];
-    if(this.diagonals)positions.push({
-      x: token.x + g,
-      y: token.y + g,
-      center: { x: token.center.x + g, y: token.center.y + g },
-    },
-    {
-      x: token.x - g,
-      y: token.y - g,
-      center: { x: token.center.x - g, y: token.center.y-g },
-    },
-    {
-      x: token.x - g,
-      y: token.y + g,
-      center: { x: token.center.x - g, y: token.center.y + g },
-    },
-    {
-      x: token.x + g,
-      y: token.y - g,
-      center: { x: token.center.x + g, y: token.center.y - g },
-    })
+    if (this.diagonals) {
+      positions.push(
+        {
+          x: token.x + g,
+          y: token.y + g,
+          center: { x: token.center.x + g, y: token.center.y + g },
+        },
+        {
+          x: token.x - g,
+          y: token.y - g,
+          center: { x: token.center.x - g, y: token.center.y - g },
+        },
+        {
+          x: token.x - g,
+          y: token.y + g,
+          center: { x: token.center.x - g, y: token.center.y + g },
+        },
+        {
+          x: token.x + g,
+          y: token.y - g,
+          center: { x: token.center.x + g, y: token.center.y - g },
+        }
+      );
+    }
     for(let pos of positions){
       let snapped = canvas.grid.getSnappedPosition(pos.x,pos.y)
       pos.x = snapped.x
@@ -301,5 +293,31 @@ class Patrol {
     return false;
   }
 
-  
+  randomPathHandler(token) {
+    // Find valid positions to move to
+    let validPositions = this.getValidPositions(token);
+    if (validPositions.length === 0) {
+      // If no valid positions, we stay where we are
+      console.warn(`${token.tokenDocument.name} is stuck at ${token.tokenDocument.x},${token.tokenDocument.y}`);
+      // For good measure we just snap the token to the grid
+      this.occupiedPositions.push({ x: token.tokenDocument.x, y: token.tokenDocument.y });
+      token.visitedPositions.push({ x: token.tokenDocument.x, y: token.tokenDocument.y });
+      // if we've been stuck here for too long, we clear the visited positions
+      if (token.visitedPositions.filter(p => p.x == token.tokenDocument.x && p.y == token.tokenDocument.y).length > 5) {
+        token.visitedPositions = [];
+        console.log(`${token.tokenDocument.name} has been stuck for too long, clearing visited positions`);
+      }
+    } else {
+      // If valid positions, we move to one of them
+      // Choose a random position from the valid positions
+      let newPosition = validPositions[Math.floor(Math.random() * validPositions.length)];
+      token.visitedPositions.push({ x: newPosition.x, y: newPosition.y });
+      this.occupiedPositions.push({ x: newPosition.x, y: newPosition.y });
+      // Remove the token from the occupied positions
+      this.occupiedPositions = this.occupiedPositions.filter(
+        (pos) => pos.x !== token.tokenDocument.x || pos.y !== token.tokenDocument.y
+      );
+      return newPosition;
+    }
+  }
 }
