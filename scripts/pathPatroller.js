@@ -106,8 +106,7 @@ class PathPatroller
                     pathName = token.tokenDocument.document.getFlag(MODULE_NAME_PATROL, "patrolPathName");
 
                     if(token.tokenDocument.document.getFlag(MODULE_NAME_PATROL, "multiPath"))
-                    {
-                        isMultiPath = true;
+                    { 
                         patrolPathGroup = canvas.drawings.placeables.filter((d) => 
                         {
                             if(d.document?.text == pathName)
@@ -222,7 +221,7 @@ class PathPatroller
     {
         this.pathsInUse = [];  
         this.tokens = [];
-        canvas.tokens.placeables.filter((t) => t.document.getFlag(MODULE_NAME_PATROL, "makePatroller")).forEach((t) => {
+        canvas.tokens.placeables.filter((t) => t.document.getFlag(MODULE_NAME_PATROL, "isPathPatroller")).forEach((t) => {
             this.tokens.push({tokenDocument: t});
             let pathID = t.document.getFlag(MODULE_NAME_PATROL, "pathID");
 
